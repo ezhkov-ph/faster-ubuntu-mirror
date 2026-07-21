@@ -201,7 +201,7 @@ show_rankings() {
 
 choose_mirrors() {
     local -n output_ref="$1"
-    local available requested index line speed mirror
+    local available requested index speed mirror
     mapfile -t lines <"$WORK_DIR/ranked.tsv"
     available=${#lines[@]}
     requested=$MIRROR_COUNT
