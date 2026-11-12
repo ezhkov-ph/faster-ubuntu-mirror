@@ -6,6 +6,7 @@ IFS=$'\n\t'
 
 readonly PROGRAM_NAME="faster-ubuntu-mirror"
 readonly DEFAULT_TEST_SIZE_KB=100
+readonly DEFAULT_TEST_RUNS=3
 readonly DEFAULT_TOP_LIMIT=10
 # Canonical's mirror index is served over HTTP. Some networks cannot establish
 # a TLS connection to this endpoint even when its HTTP service is reachable.
@@ -13,6 +14,7 @@ readonly MIRRORS_INDEX="http://mirrors.ubuntu.com"
 
 COUNTRIES=()
 TEST_SIZE_KB="$DEFAULT_TEST_SIZE_KB"
+TEST_RUNS="$DEFAULT_TEST_RUNS"
 MIRROR_COUNT=1
 AUTO_SELECT=false
 DRY_RUN=false
@@ -42,6 +44,7 @@ Options:
                               In legacy sources.list mode only the first is
                               applied, because that format has one URI/line.
   -s, --size KB              Maximum package payload sampled in KiB (default: 100).
+  -r, --runs N               Benchmark rounds per mirror (default: 3); rank by median.
   -a, --auto, --auto-select  Select the fastest mirror(s) without prompting.
       --dry-run              Show the resulting file; do not change the system.
   -L, --legacy               Force /etc/apt/sources.list mode.
@@ -97,6 +100,11 @@ parse_args() {
                 shift; (($#)) || die "--size requires a value"
                 [[ "$1" =~ ^[1-9][0-9]*$ ]] || die "--size must be a positive integer"
                 TEST_SIZE_KB="$1"
+                ;;
+            -r|--runs)
+                shift; (($#)) || die "--runs requires a value"
+                [[ "$1" =~ ^[1-9][0-9]*$ ]] || die "--runs must be a positive integer"
+                TEST_RUNS="$1"
                 ;;
             -a|--auto|--auto-select) AUTO_SELECT=true ;;
             --dry-run) DRY_RUN=true ;;
@@ -214,29 +222,62 @@ find_probe_file() {
 }
 
 test_mirrors() {
-    local results="$WORK_DIR/results.tsv" mirror speed sample_end max_time
+    local samples="$WORK_DIR/samples.tsv" results="$WORK_DIR/results.tsv"
+    local mirror speed sample_end max_time round minimum_samples
     find_probe_file
     sample_end=$((TEST_SIZE_KB * 1024 - 1))
     max_time=$((TEST_SIZE_KB / 1024 + 15))
     ((max_time > 120)) && max_time=120
-    : >"$results"
+    minimum_samples=$((TEST_RUNS / 2 + 1))
+    : >"$samples"
 
-    printf 'Testing up to %s KiB of %s (package size: %s KiB) from each mirror...\n' \
-        "$TEST_SIZE_KB" "$PROBE_FILE" "$((PROBE_SIZE / 1024))"
+    printf 'Testing up to %s KiB of %s (package size: %s KiB), %s rounds per mirror...\n' \
+        "$TEST_SIZE_KB" "$PROBE_FILE" "$((PROBE_SIZE / 1024))" "$TEST_RUNS"
     ((PROBE_SIZE >= sample_end + 1)) || warn "The largest available package is smaller than the requested sample size"
-    while IFS= read -r mirror; do
-        if speed=$(curl --fail --location --silent --show-error \
-            --connect-timeout 3 --max-time "$max_time" --range "0-$sample_end" \
-            --output /dev/null --write-out '%{speed_download}' \
-            "$mirror/$PROBE_FILE" 2>/dev/null); then
-            [[ "$speed" =~ ^[0-9]+([.][0-9]+)?$ ]] || continue
-            speed="${speed%.*}"
-            ((speed > 0)) || continue
-            printf '%s\t%s\n' "$speed" "$mirror" >>"$results"
-        else
-            printf '  unavailable: %s\n' "$mirror" >&2
-        fi
-    done <"$WORK_DIR/mirrors.txt"
+    for ((round = 1; round <= TEST_RUNS; round++)); do
+        printf 'Benchmark round %s/%s...\n' "$round" "$TEST_RUNS"
+        while IFS= read -r mirror; do
+            if speed=$(curl --fail --location --silent --show-error \
+                --connect-timeout 3 --max-time "$max_time" --range "0-$sample_end" \
+                --output /dev/null --write-out '%{speed_download}' \
+                "$mirror/$PROBE_FILE" 2>/dev/null); then
+                [[ "$speed" =~ ^[0-9]+([.][0-9]+)?$ ]] || continue
+                speed="${speed%.*}"
+                ((speed > 0)) || continue
+                printf '%s\t%s\n' "$speed" "$mirror" >>"$samples"
+            else
+                printf '  unavailable (%s/%s): %s\n' "$round" "$TEST_RUNS" "$mirror" >&2
+            fi
+        done <"$WORK_DIR/mirrors.txt"
+    done
+
+    awk -F '\t' -v minimum="$minimum_samples" '
+        {
+            mirror = $2
+            count[mirror]++
+            values[mirror, count[mirror]] = $1 + 0
+        }
+        END {
+            for (mirror in count) {
+                n = count[mirror]
+                if (n < minimum) continue
+                for (i in sorted) delete sorted[i]
+                for (i = 1; i <= n; i++) sorted[i] = values[mirror, i]
+                for (i = 1; i <= n; i++) {
+                    for (j = i + 1; j <= n; j++) {
+                        if (sorted[j] < sorted[i]) {
+                            temporary = sorted[i]
+                            sorted[i] = sorted[j]
+                            sorted[j] = temporary
+                        }
+                    }
+                }
+                if (n % 2 == 1) median = sorted[(n + 1) / 2]
+                else median = int((sorted[n / 2] + sorted[n / 2 + 1]) / 2)
+                print median "\t" mirror
+            }
+        }
+    ' "$samples" >"$results"
 
     sort -rn -k1,1 "$results" >"$WORK_DIR/ranked.tsv"
     [[ -s "$WORK_DIR/ranked.tsv" ]] || die "No mirror supplied a usable package payload for $CODENAME"
@@ -244,7 +285,7 @@ test_mirrors() {
 
 show_rankings() {
     local index=0 speed mirror
-    printf '\nFastest reachable mirrors:\n'
+    printf '\nFastest reachable mirrors (median of %s rounds):\n' "$TEST_RUNS"
     while IFS=$'\t' read -r speed mirror; do
         ((index += 1))
         printf '  %2d. %-11s %s\n' "$index" "$(human_speed "$speed")" "$mirror"
