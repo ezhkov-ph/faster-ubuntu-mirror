@@ -195,8 +195,8 @@ select_probe_file() {
             /^$/ { consider(); filename = ""; size = 0 }
             END {
                 consider()
-                if (best_file != "") print best_file "\\t" best_size
-                else if (largest_file != "") print largest_file "\\t" largest_size
+                if (best_file != "") print best_file "\t" best_size
+                else if (largest_file != "") print largest_file "\t" largest_size
                 else exit 1
             }
         '
@@ -239,7 +239,7 @@ test_mirrors() {
     done <"$WORK_DIR/mirrors.txt"
 
     sort -rn -k1,1 "$results" >"$WORK_DIR/ranked.tsv"
-    [[ -s "$WORK_DIR/ranked.tsv" ]] || die "No mirror supplied a valid InRelease file for $CODENAME"
+    [[ -s "$WORK_DIR/ranked.tsv" ]] || die "No mirror supplied a usable package payload for $CODENAME"
 }
 
 show_rankings() {
