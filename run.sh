@@ -7,7 +7,9 @@ IFS=$'\n\t'
 readonly PROGRAM_NAME="faster-ubuntu-mirror"
 readonly DEFAULT_TEST_SIZE_KB=100
 readonly DEFAULT_TOP_LIMIT=10
-readonly MIRRORS_INDEX="https://mirrors.ubuntu.com"
+# Canonical's mirror index is served over HTTP. Some networks cannot establish
+# a TLS connection to this endpoint even when its HTTP service is reachable.
+readonly MIRRORS_INDEX="http://mirrors.ubuntu.com"
 
 COUNTRIES=()
 TEST_SIZE_KB="$DEFAULT_TEST_SIZE_KB"
