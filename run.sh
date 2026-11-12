@@ -23,6 +23,8 @@ SOURCE_FORMAT=""
 CODENAME=""
 WORK_DIR=""
 BACKUP_FILE=""
+PROBE_FILE=""
+PROBE_SIZE=0
 
 usage() {
     cat <<'EOF'
@@ -39,7 +41,7 @@ Options:
   -n, --number N             Select up to N fastest mirrors (default: 1).
                               In legacy sources.list mode only the first is
                               applied, because that format has one URI/line.
-  -s, --size KB              Bytes sampled from InRelease in KiB (default: 100).
+  -s, --size KB              Maximum package payload sampled in KiB (default: 100).
   -a, --auto, --auto-select  Select the fastest mirror(s) without prompting.
       --dry-run              Show the resulting file; do not change the system.
   -L, --legacy               Force /etc/apt/sources.list mode.
@@ -64,7 +66,7 @@ trap cleanup EXIT
 
 require_commands() {
     local command_name
-    for command_name in awk curl diff grep mktemp sort; do
+    for command_name in awk curl diff dpkg grep gzip mktemp sort; do
         command -v "$command_name" >/dev/null 2>&1 || die "Required command not found: $command_name"
     done
 }
@@ -167,17 +169,66 @@ human_speed() {
     fi
 }
 
+select_probe_file() {
+    local mirror="$1" architecture packages_url target_bytes
+
+    architecture=$(dpkg --print-architecture)
+    packages_url="$mirror/dists/$CODENAME/main/binary-$architecture/Packages.gz"
+    target_bytes=$((TEST_SIZE_KB * 1024))
+
+    curl --fail --location --silent --show-error "$packages_url" |
+        gzip -dc |
+        awk -v target="$target_bytes" '
+            function consider() {
+                if (filename == "" || size !~ /^[0-9]+$/) return
+                if (size >= target && (best_size == 0 || size < best_size)) {
+                    best_size = size
+                    best_file = filename
+                }
+                if (size > largest_size) {
+                    largest_size = size
+                    largest_file = filename
+                }
+            }
+            /^Filename: / { filename = substr($0, 11) }
+            /^Size: / { size = $2 }
+            /^$/ { consider(); filename = ""; size = 0 }
+            END {
+                consider()
+                if (best_file != "") print best_file "\\t" best_size
+                else if (largest_file != "") print largest_file "\\t" largest_size
+                else exit 1
+            }
+        '
+}
+
+find_probe_file() {
+    local mirror selection
+    while IFS= read -r mirror; do
+        if selection=$(select_probe_file "$mirror"); then
+            IFS=$'\t' read -r PROBE_FILE PROBE_SIZE <<<"$selection"
+            return 0
+        fi
+    done <"$WORK_DIR/mirrors.txt"
+    die "Could not select a package payload for benchmarking"
+}
+
 test_mirrors() {
-    local results="$WORK_DIR/results.tsv" mirror speed sample_end
+    local results="$WORK_DIR/results.tsv" mirror speed sample_end max_time
+    find_probe_file
     sample_end=$((TEST_SIZE_KB * 1024 - 1))
+    max_time=$((TEST_SIZE_KB / 1024 + 15))
+    ((max_time > 120)) && max_time=120
     : >"$results"
 
-    printf 'Testing %s KiB of %s InRelease from each mirror...\n' "$TEST_SIZE_KB" "$CODENAME"
+    printf 'Testing up to %s KiB of %s (package size: %s KiB) from each mirror...\n' \
+        "$TEST_SIZE_KB" "$PROBE_FILE" "$((PROBE_SIZE / 1024))"
+    ((PROBE_SIZE >= sample_end + 1)) || warn "The largest available package is smaller than the requested sample size"
     while IFS= read -r mirror; do
         if speed=$(curl --fail --location --silent --show-error \
-            --connect-timeout 3 --max-time 12 --range "0-$sample_end" \
+            --connect-timeout 3 --max-time "$max_time" --range "0-$sample_end" \
             --output /dev/null --write-out '%{speed_download}' \
-            "$mirror/dists/$CODENAME/InRelease" 2>/dev/null); then
+            "$mirror/$PROBE_FILE" 2>/dev/null); then
             [[ "$speed" =~ ^[0-9]+([.][0-9]+)?$ ]] || continue
             speed="${speed%.*}"
             ((speed > 0)) || continue

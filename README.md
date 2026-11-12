@@ -9,7 +9,7 @@
 ## Что делает
 
 - получает актуальный список зарегистрированных зеркал из официального сервиса Ubuntu;
-- проверяет у каждого зеркала `dists/<codename>/InRelease`, то есть именно метаданные запущенного релиза;
+- выбирает пакет из индекса активного релиза и проверяет у каждого зеркала Range-загрузку его данных;
 - ранжирует доступные зеркала по скорости загрузки;
 - по умолчанию предлагает выбор интерактивно;
 - перед применением всегда создаёт резервную копию;
@@ -20,7 +20,7 @@
 
 ## English — Ubuntu mirror selector
 
-Faster Ubuntu Mirror helps Ubuntu users choose a nearby, fast and reachable **APT repository mirror**. It obtains registered mirrors from Canonical’s mirror index, downloads a range of `dists/<release>/InRelease` to verify the active Ubuntu release, ranks mirrors by throughput, and safely updates the system APT source.
+Faster Ubuntu Mirror helps Ubuntu users choose a nearby, fast and reachable **APT repository mirror**. It obtains registered mirrors from Canonical’s mirror index, selects a package from the active release, downloads a byte range from that package, ranks mirrors by throughput, and safely updates the system APT source.
 
 It supports both the traditional `sources.list` format and Ubuntu’s modern Deb822 `ubuntu.sources` format. Every real change is backed up and verified with `apt-get update`; a failed verification restores the previous source file automatically.
 
